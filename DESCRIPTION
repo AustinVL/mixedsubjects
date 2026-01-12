@@ -1,0 +1,23 @@
+Package: mixedsubjects
+Title: Estimation and Design Tools for Mixed-Subjects RCTs
+Version: 0.1.0
+Authors@R: c(
+    person("Austin", "van Loon", email = "vanloon@mit.edu", role = c("aut")),
+    person("Klint", "Kanopka", email = "klint.kanopka@nyu.edu", role = c("aut")),
+    person("OpenAI", role = c("ctb"))
+)
+Description: Implements estimators and design helpers for mixed-subjects design
+    randomized controlled trials that combine human outcomes with model-based
+    predictions.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    stats
+Suggests:
+    testthat,
+    broom,
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
