@@ -264,7 +264,15 @@ parse_msd_formula <- function(formula, data) {
   main_form <- stats::as.formula(trimws(split[1]))
   mf <- stats::model.frame(main_form, data = data, na.action = stats::na.pass)
   y <- stats::model.response(mf)
-  d <- mf[[2]]
+  term_labels <- attr(stats::terms(main_form), "term.labels")
+  if (length(term_labels) != 1) {
+    stop("Formula must specify exactly one treatment variable on the RHS.")
+  }
+  treat_name <- term_labels[1]
+  if (!treat_name %in% names(data)) {
+    stop("Treatment variable not found in data: ", treat_name)
+  }
+  d <- data[[treat_name]]
   if (!all(d %in% c(0, 1))) {
     stop("Treatment variable must be coded as 0/1.")
   }
@@ -421,12 +429,8 @@ tuned_estimator <- function(data,
     mu0[i] <- arm_correction(test_data, data, arm = 0, lambda = lambda0[i])
   }
 
-  weights1 <- tapply(folds[data$d[labeled_idx] == 1], folds[data$d[labeled_idx] == 1], length)
-  weights1 <- weights1 / sum(weights1)
-  weights0 <- tapply(folds[data$d[labeled_idx] == 0], folds[data$d[labeled_idx] == 0], length)
-  weights0 <- weights0 / sum(weights0)
-  weights1 <- weights1[as.character(fold_levels)]
-  weights0 <- weights0[as.character(fold_levels)]
+  weights1 <- fold_weights(folds[data$d[labeled_idx] == 1], fold_levels)
+  weights0 <- fold_weights(folds[data$d[labeled_idx] == 0], fold_levels)
 
   mu1_hat <- sum(mu1 * as.numeric(weights1))
   mu0_hat <- sum(mu0 * as.numeric(weights0))
@@ -525,9 +529,7 @@ tuned_dip_estimator <- function(data,
     tau[i] <- dip_fold_estimate(test_data, data, lambda1[i], lambda0[i])
   }
 
-  weights <- tapply(folds, folds, length)
-  weights <- weights / sum(weights)
-  weights <- weights[as.character(fold_levels)]
+  weights <- fold_weights(folds, fold_levels)
   estimate <- sum(tau * as.numeric(weights))
 
   tuning <- list(
@@ -707,7 +709,21 @@ compute_se <- function(result,
   }
 
   if (se_correction == "delta" && estimator %in% c("ppi_pp", "dt", "dip_pp", "dt_dip")) {
-    variance$total <- variance$total + delta_lambda_variance(data, estimator, result)
+    variance$total <- variance$total + delta_lambda_variance(data, estimator, result, n_boot)
+  }
+
+  if (is.na(variance$total)) {
+    warning("Analytic SE unavailable; falling back to bootstrap.", call. = FALSE)
+    std_error <- bootstrap_se(
+      formula,
+      data,
+      estimator,
+      n_boot,
+      bootstrap_parallel,
+      bootstrap_seed,
+      result$folds
+    )
+    return(list(std_error = std_error, variance_decomp = NULL))
   }
 
   list(
@@ -903,30 +919,31 @@ var_crossfit_dip <- function(data, folds, fold_levels, lambda1, lambda0, weights
 compute_fold_weights <- function(folds, estimator) {
   fold_levels <- sort(unique(folds$fold))
   if (estimator %in% c("ppi_pp", "dt")) {
-    weights1 <- compute_arm_weights(folds, arm = 1)
-    weights0 <- compute_arm_weights(folds, arm = 0)
+    weights1 <- compute_arm_weights(folds, arm = 1, fold_levels = fold_levels)
+    weights0 <- compute_arm_weights(folds, arm = 0, fold_levels = fold_levels)
     weights <- (weights1 + weights0) / 2
   } else {
-    weights <- tapply(folds$fold, folds$fold, length)
-    weights <- weights / sum(weights)
+    weights <- fold_weights(folds$fold, fold_levels)
   }
   weights[as.character(fold_levels)]
 }
 
-compute_arm_weights <- function(folds, arm) {
-  weights <- tapply(folds$fold[folds$arm == arm], folds$fold[folds$arm == arm], length)
-  weights <- weights / sum(weights)
-  weights
+compute_arm_weights <- function(folds, arm, fold_levels = NULL) {
+  if (is.null(fold_levels)) {
+    fold_levels <- sort(unique(folds$fold))
+  }
+  weights <- fold_weights(folds$fold[folds$arm == arm], fold_levels)
+  weights[as.character(fold_levels)]
 }
 
-delta_lambda_variance <- function(data, estimator, result) {
+delta_lambda_variance <- function(data, estimator, result, n_boot) {
   folds <- result$folds
   if (is.null(folds)) {
     return(0)
   }
   fold_levels <- sort(unique(folds$fold))
-  weights1 <- compute_arm_weights(folds, arm = 1)
-  weights0 <- compute_arm_weights(folds, arm = 0)
+  weights1 <- compute_arm_weights(folds, arm = 1, fold_levels = fold_levels)
+  weights0 <- compute_arm_weights(folds, arm = 0, fold_levels = fold_levels)
   weights_all <- compute_fold_weights(folds, estimator)
   delta_var <- 0
 
@@ -937,18 +954,19 @@ delta_lambda_variance <- function(data, estimator, result) {
     train_data <- data[train_idx, , drop = FALSE]
     test_data <- data[test_idx, , drop = FALSE]
     if (estimator %in% c("ppi_pp", "dip_pp")) {
-      lambda_var <- bootstrap_lambda(data, train_idx, estimator)
+      lambda_var <- bootstrap_lambda(data, train_idx, estimator, n_boot = n_boot)
       if (estimator == "ppi_pp") {
         derivs <- lambda_derivative(test_data, data, estimator, arm_specific = TRUE)
         weight <- weights1[i] * derivs$lambda1 + weights0[i] * derivs$lambda0
         delta_var <- delta_var + weight^2 * lambda_var
       } else {
-        weight <- weights_all[i] * lambda_derivative(test_data, data, estimator)
+        derivs <- lambda_derivative(test_data, data, estimator)
+        weight <- weights_all[i] * derivs$lambda1
         delta_var <- delta_var + weight^2 * lambda_var
       }
     } else {
-      lambda_var1 <- bootstrap_lambda(data, train_idx, estimator, arm = 1)
-      lambda_var0 <- bootstrap_lambda(data, train_idx, estimator, arm = 0)
+      lambda_var1 <- bootstrap_lambda(data, train_idx, estimator, arm = 1, n_boot = n_boot)
+      lambda_var0 <- bootstrap_lambda(data, train_idx, estimator, arm = 0, n_boot = n_boot)
       derivs <- lambda_derivative(test_data, data, estimator, arm_specific = TRUE)
       delta_var <- delta_var + (weights1[i]^2) * derivs$lambda1^2 * lambda_var1 +
         (weights0[i]^2) * derivs$lambda0^2 * lambda_var0
@@ -962,10 +980,7 @@ lambda_derivative <- function(labeled_fold, data, estimator, arm_specific = FALS
   if (estimator %in% c("ppi_pp", "dt")) {
     deriv1 <- mean(unlabeled$s1[unlabeled$d == 1]) - mean(labeled_fold$s_assigned[labeled_fold$d == 1])
     deriv0 <- mean(unlabeled$s0[unlabeled$d == 0]) - mean(labeled_fold$s_assigned[labeled_fold$d == 0])
-    if (arm_specific) {
-      return(list(lambda1 = deriv1, lambda0 = -deriv0))
-    }
-    return(deriv1 - deriv0)
+    return(list(lambda1 = deriv1, lambda0 = -deriv0))
   }
 
   u_term <- mean(unlabeled$s1 - unlabeled$s0)
@@ -974,7 +989,7 @@ lambda_derivative <- function(labeled_fold, data, estimator, arm_specific = FALS
   if (arm_specific) {
     return(list(lambda1 = mean(unlabeled$s1) - s1_mean, lambda0 = -(mean(unlabeled$s0) - s0_mean)))
   }
-  u_term - s1_mean + s0_mean
+  list(lambda1 = u_term - s1_mean + s0_mean, lambda0 = 0)
 }
 
 bootstrap_lambda <- function(data, labeled_idx, estimator, arm = NULL, n_boot = 200) {
@@ -1041,10 +1056,10 @@ bootstrap_se <- function(formula, data, estimator, n_boot, bootstrap_parallel, b
   if (!is.null(bootstrap_seed)) {
     set.seed(bootstrap_seed)
   }
-  boot_est <- numeric(n_boot)
   labeled_idx <- which(data$r == 1)
   unlabeled_idx <- which(data$r == 0)
-  for (b in seq_len(n_boot)) {
+
+  bootstrap_once <- function(iter) {
     if (is.null(folds)) {
       resample_labeled <- sample(labeled_idx, replace = TRUE)
     } else {
@@ -1078,7 +1093,18 @@ bootstrap_se <- function(formula, data, estimator, n_boot, bootstrap_parallel, b
       folds = boot_folds,
       crossfit = !is.null(boot_folds)
     )
-    boot_est[b] <- boot_fit$estimate
+    boot_fit$estimate
+  }
+
+  if (bootstrap_parallel) {
+    if (.Platform$OS.type == "windows") {
+      warning("bootstrap_parallel not supported on Windows; running serially.", call. = FALSE)
+      boot_est <- vapply(seq_len(n_boot), bootstrap_once, numeric(1))
+    } else {
+      boot_est <- unlist(parallel::mclapply(seq_len(n_boot), bootstrap_once, mc.cores = parallel::detectCores(), mc.set.seed = TRUE))
+    }
+  } else {
+    boot_est <- vapply(seq_len(n_boot), bootstrap_once, numeric(1))
   }
   stats::sd(boot_est)
 }
@@ -1117,6 +1143,15 @@ safe_div <- function(num, denom) {
     return(NA_real_)
   }
   num / denom
+}
+
+fold_weights <- function(fold_assignments, fold_levels) {
+  counts <- tabulate(match(fold_assignments, fold_levels), nbins = length(fold_levels))
+  total <- sum(counts)
+  if (total == 0) {
+    return(setNames(rep(0, length(fold_levels)), fold_levels))
+  }
+  stats::setNames(counts / total, fold_levels)
 }
 
 tune_ratio <- function(numer,

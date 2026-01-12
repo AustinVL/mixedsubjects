@@ -17,4 +17,7 @@ Imports:
     stats
 Suggests:
     testthat,
-    broom
+    broom,
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
