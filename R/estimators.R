@@ -1,7 +1,7 @@
 #' Estimate ATEs in mixed-subjects design RCTs
 #'
-#' @param formula A formula of the form Y ~ D | S or Y ~ D | S0 + S1.
-#' @param data A data.frame containing outcome, treatment, and prediction columns.
+#' @param formula A formula of the form Y ~ D | S or Y ~ D | S1 - S0.
+#' @param data A data.frame or `msd_data` containing outcome, treatment, and prediction columns.
 #' @param estimator Estimator name.
 #' @param crossfit Logical; whether to use cross-fitting when supported.
 #' @param k Number of folds for cross-fitting (must be 2 for now).
@@ -42,6 +42,12 @@ msd_estimate <- function(formula,
   se <- match.arg(se)
   tuning_fallback <- match.arg(tuning_fallback)
   se_correction <- match.arg(se_correction)
+  if (inherits(data, "msd_data")) {
+    if (missing(formula) || is.null(formula)) {
+      formula <- data$formula
+    }
+    data <- data$data
+  }
   parsed <- parse_msd_formula(formula, data)
   data_msd <- parsed$data
   needs_two_arm <- estimator %in% c("dip", "dip_pp", "dt_dip")
@@ -49,7 +55,7 @@ msd_estimate <- function(formula,
     stop("Predictions must be supplied for estimators other than dim.")
   }
   if (needs_two_arm && !parsed$has_two_arm) {
-    stop("DiP estimators require two prediction columns (S0 + S1).")
+    stop("DiP estimators require two prediction columns (S1 - S0).")
   }
 
   if (estimator == "dim") {
@@ -151,7 +157,7 @@ msd_estimate <- function(formula,
 
 #' Select estimators based on analytic SE
 #'
-#' @param formula A formula of the form Y ~ D | S or Y ~ D | S0 + S1.
+#' @param formula A formula of the form Y ~ D | S or Y ~ D | S1 - S0.
 #' @param data A data.frame containing outcome, treatment, and prediction columns.
 #' @param estimators Candidate estimators to compare.
 #' @param se_type SE type (analytic only for now).
@@ -293,16 +299,26 @@ parse_msd_formula <- function(formula, data) {
   }
   if (length(split) == 1) {
     preds <- NULL
+    pred_vars <- character()
+    pred_expr <- NULL
   } else {
-    pred_form <- stats::as.formula(paste("~", trimws(split[2])))
+    pred_expr <- trimws(split[2])
+    pred_form <- stats::as.formula(paste("~", pred_expr))
     preds <- stats::model.matrix(pred_form, data = data)
     preds <- preds[, colnames(preds) != "(Intercept)", drop = FALSE]
+    pred_vars <- all.vars(pred_form)
   }
 
   if (is.null(preds)) {
     s0 <- s1 <- s_assigned <- rep(NA_real_, length(y))
     has_two_arm <- FALSE
     has_predictions <- FALSE
+  } else if (length(pred_vars) >= 2 && grepl("-", pred_expr, fixed = TRUE)) {
+    s1 <- data[[pred_vars[1]]]
+    s0 <- data[[pred_vars[2]]]
+    s_assigned <- ifelse(d == 1, s1, s0)
+    has_two_arm <- TRUE
+    has_predictions <- TRUE
   } else if (ncol(preds) == 1) {
     s_assigned <- preds[, 1]
     s0 <- ifelse(d == 0, s_assigned, NA_real_)
@@ -1180,6 +1196,13 @@ safe_div <- function(num, denom) {
   num / denom
 }
 
+`%||%` <- function(x, y) {
+  if (!is.null(x)) {
+    return(x)
+  }
+  y
+}
+
 fold_weights <- function(fold_assignments, fold_levels) {
   counts <- tabulate(match(fold_assignments, fold_levels), nbins = length(fold_levels))
   total <- sum(counts)
@@ -1247,4 +1270,64 @@ warn_small_n <- function(labeled, arm) {
   if (nrow(labeled) < 10) {
     warning(sprintf("Small labeled sample in arm %s; tuning may be unstable.", arm), call. = FALSE)
   }
+}
+#' Create an MSD data object with auto-detected columns
+#'
+#' @param data A data.frame with outcome, treatment, and prediction columns.
+#' @param outcome Name of outcome column (default: detect Y/y/outcome).
+#' @param treatment Name of treatment column (default: detect D/d/treat/treatment).
+#' @param s0 Name of control prediction column.
+#' @param s1 Name of treated prediction column.
+#' @param s_assigned Name of assigned-arm prediction column.
+#' @return An object of class `msd_data`.
+#' @export
+msd_data <- function(data,
+                     outcome = NULL,
+                     treatment = NULL,
+                     s0 = NULL,
+                     s1 = NULL,
+                     s_assigned = NULL) {
+  if (!is.data.frame(data)) {
+    stop("data must be a data.frame.")
+  }
+  names_lower <- tolower(names(data))
+  detect_name <- function(candidates) {
+    idx <- match(candidates, names_lower)
+    idx <- idx[!is.na(idx)]
+    if (length(idx) == 0) {
+      return(NULL)
+    }
+    names(data)[idx[1]]
+  }
+
+  outcome <- outcome %||% detect_name(c("y", "outcome"))
+  treatment <- treatment %||% detect_name(c("d", "treat", "treatment"))
+  s0 <- s0 %||% detect_name(c("s0"))
+  s1 <- s1 %||% detect_name(c("s1"))
+  s_assigned <- s_assigned %||% detect_name(c("s"))
+
+  if (is.null(outcome) || is.null(treatment)) {
+    stop("Unable to detect outcome or treatment columns; please supply them explicitly.")
+  }
+
+  if (!is.null(s0) && !is.null(s1)) {
+    formula <- stats::as.formula(sprintf("%s ~ %s | %s - %s", outcome, treatment, s1, s0))
+  } else if (!is.null(s_assigned)) {
+    formula <- stats::as.formula(sprintf("%s ~ %s | %s", outcome, treatment, s_assigned))
+  } else {
+    formula <- stats::as.formula(sprintf("%s ~ %s", outcome, treatment))
+  }
+
+  structure(
+    list(
+      data = data,
+      outcome = outcome,
+      treatment = treatment,
+      s0 = s0,
+      s1 = s1,
+      s_assigned = s_assigned,
+      formula = formula
+    ),
+    class = "msd_data"
+  )
 }

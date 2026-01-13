@@ -51,7 +51,7 @@ S1 <- S0 + 0.2 + rnorm(n, sd = 0.5)
 
 example_data <- data.frame(Y = Y, D = D, S0 = S0, S1 = S1)
 
-fit <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip_pp")
+fit <- msd_estimate(Y ~ D | S1 - S0, data = example_data, estimator = "dip_pp")
 fit
 ```
 
@@ -70,12 +70,24 @@ fit_greg
 fit_ppi
 ```
 
+You can also create an `msd_data` object that auto-detects columns by name, then
+override the formula if your variable names differ.
+
+```{r}
+auto_data <- msd_data(example_data)
+fit_auto <- msd_estimate(data = auto_data, estimator = "dip_pp")
+
+fit_alt <- msd_estimate(Y ~ D | S1 - S0, data = auto_data, estimator = "dip_pp")
+fit_auto
+fit_alt
+```
+
 When you have predictions for both arms (`S0` and `S1`), DiP estimators can use
 the within-unit contrast to reduce noise.
 
 ```{r}
-fit_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip")
-fit_dt_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dt_dip")
+fit_dip <- msd_estimate(Y ~ D | S1 - S0, data = example_data, estimator = "dip")
+fit_dt_dip <- msd_estimate(Y ~ D | S1 - S0, data = example_data, estimator = "dt_dip")
 
 fit_dip
 fit_dt_dip
@@ -86,7 +98,7 @@ fit_dt_dip
 Use `msd_select()` to compare estimators by their analytic standard errors.
 
 ```{r}
-msd_select(Y ~ D | S0 + S1, data = example_data)
+msd_select(Y ~ D | S1 - S0, data = example_data)
 ```
 
 # Interpretation tips for applied researchers

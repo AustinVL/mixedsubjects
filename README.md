@@ -21,10 +21,18 @@ library(mixedsubjects)
 
 # data frame with treatment assignment D, observed outcome Y (NA if unlabeled),
 # and model predictions S0 and S1 for each unit
-est <- msd_estimate(Y ~ D | S0 + S1, data = my_data, estimator = "dip_pp")
+est <- msd_estimate(Y ~ D | S1 - S0, data = my_data, estimator = "dip_pp")
 
 est$estimate
 summary(est)
+```
+
+You can also use `msd_data()` to auto-detect column names by convention and still
+override the formula when needed.
+
+```r
+auto_data <- msd_data(my_data)
+msd_estimate(data = auto_data, estimator = "dip_pp")
 ```
 
 ## What estimator should I use?
