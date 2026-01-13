@@ -264,15 +264,16 @@ parse_msd_formula <- function(formula, data) {
   main_form <- stats::as.formula(trimws(split[1]))
   mf <- stats::model.frame(main_form, data = data, na.action = stats::na.pass)
   y <- stats::model.response(mf)
-  term_labels <- attr(stats::terms(main_form), "term.labels")
-  if (length(term_labels) != 1) {
-    stop("Formula must specify exactly one treatment variable on the RHS.")
+  terms_obj <- stats::terms(main_form)
+  vars <- attr(terms_obj, "variables")
+  if (length(vars) < 3) {
+    stop("Formula must include an outcome and treatment: Y ~ D | ...")
   }
-  treat_name <- term_labels[1]
-  if (!treat_name %in% names(data)) {
-    stop("Treatment variable not found in data: ", treat_name)
+  d_name <- as.character(vars[[3]])
+  if (!d_name %in% colnames(mf)) {
+    stop("Treatment variable not found in data: ", d_name)
   }
-  d <- data[[treat_name]]
+  d <- mf[[d_name]]
   if (!all(d %in% c(0, 1))) {
     stop("Treatment variable must be coded as 0/1.")
   }
@@ -431,6 +432,9 @@ tuned_estimator <- function(data,
 
   weights1 <- fold_weights(folds[data$d[labeled_idx] == 1], fold_levels)
   weights0 <- fold_weights(folds[data$d[labeled_idx] == 0], fold_levels)
+  if (sum(weights1) == 0 || sum(weights0) == 0) {
+    warning("Fold weights contain no labeled units in at least one arm; estimates may be unstable.", call. = FALSE)
+  }
 
   mu1_hat <- sum(mu1 * as.numeric(weights1))
   mu0_hat <- sum(mu0 * as.numeric(weights0))
@@ -530,6 +534,9 @@ tuned_dip_estimator <- function(data,
   }
 
   weights <- fold_weights(folds, fold_levels)
+  if (sum(weights) == 0) {
+    warning("Fold weights contain no labeled units; estimates may be unstable.", call. = FALSE)
+  }
   estimate <- sum(tau * as.numeric(weights))
 
   tuning <- list(
@@ -957,19 +964,19 @@ delta_lambda_variance <- function(data, estimator, result, n_boot) {
       lambda_var <- bootstrap_lambda(data, train_idx, estimator, n_boot = n_boot)
       if (estimator == "ppi_pp") {
         derivs <- lambda_derivative(test_data, data, estimator, arm_specific = TRUE)
-        weight <- weights1[i] * derivs$lambda1 + weights0[i] * derivs$lambda0
+        weight <- weights1[i] * derivs$d_tau_d_lambda1 + weights0[i] * derivs$d_tau_d_lambda0
         delta_var <- delta_var + weight^2 * lambda_var
       } else {
         derivs <- lambda_derivative(test_data, data, estimator)
-        weight <- weights_all[i] * derivs$lambda1
+        weight <- weights_all[i] * derivs$d_tau_d_lambda1
         delta_var <- delta_var + weight^2 * lambda_var
       }
     } else {
       lambda_var1 <- bootstrap_lambda(data, train_idx, estimator, arm = 1, n_boot = n_boot)
       lambda_var0 <- bootstrap_lambda(data, train_idx, estimator, arm = 0, n_boot = n_boot)
       derivs <- lambda_derivative(test_data, data, estimator, arm_specific = TRUE)
-      delta_var <- delta_var + (weights1[i]^2) * derivs$lambda1^2 * lambda_var1 +
-        (weights0[i]^2) * derivs$lambda0^2 * lambda_var0
+      delta_var <- delta_var + (weights1[i]^2) * derivs$d_tau_d_lambda1^2 * lambda_var1 +
+        (weights0[i]^2) * derivs$d_tau_d_lambda0^2 * lambda_var0
     }
   }
   delta_var
@@ -977,19 +984,22 @@ delta_lambda_variance <- function(data, estimator, result, n_boot) {
 
 lambda_derivative <- function(labeled_fold, data, estimator, arm_specific = FALSE) {
   unlabeled <- data[data$r == 0, , drop = FALSE]
+  out <- list(d_tau_d_lambda1 = 0, d_tau_d_lambda0 = 0)
   if (estimator %in% c("ppi_pp", "dt")) {
     deriv1 <- mean(unlabeled$s1[unlabeled$d == 1]) - mean(labeled_fold$s_assigned[labeled_fold$d == 1])
     deriv0 <- mean(unlabeled$s0[unlabeled$d == 0]) - mean(labeled_fold$s_assigned[labeled_fold$d == 0])
-    return(list(lambda1 = deriv1, lambda0 = -deriv0))
+    out$d_tau_d_lambda1 <- deriv1
+    out$d_tau_d_lambda0 <- -deriv0
+    return(out)
   }
 
-  u_term <- mean(unlabeled$s1 - unlabeled$s0)
-  s1_mean <- mean(labeled_fold$s1[labeled_fold$d == 1])
-  s0_mean <- mean(labeled_fold$s0[labeled_fold$d == 0])
-  if (arm_specific) {
-    return(list(lambda1 = mean(unlabeled$s1) - s1_mean, lambda0 = -(mean(unlabeled$s0) - s0_mean)))
-  }
-  list(lambda1 = u_term - s1_mean + s0_mean, lambda0 = 0)
+  u_term1 <- mean(unlabeled$s1)
+  u_term0 <- mean(unlabeled$s0)
+  s1_mean <- if (any(labeled_fold$d == 1)) mean(labeled_fold$s1[labeled_fold$d == 1]) else 0
+  s0_mean <- if (any(labeled_fold$d == 0)) mean(labeled_fold$s0[labeled_fold$d == 0]) else 0
+  out$d_tau_d_lambda1 <- u_term1 - s1_mean
+  out$d_tau_d_lambda0 <- -(u_term0 - s0_mean)
+  out
 }
 
 bootstrap_lambda <- function(data, labeled_idx, estimator, arm = NULL, n_boot = 200) {

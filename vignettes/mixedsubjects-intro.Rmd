@@ -55,6 +55,32 @@ fit <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip_pp")
 fit
 ```
 
+# Using one prediction vs. two predictions
+
+If you only have a single prediction for the assigned arm, supply it as `S` and
+use estimators that do not require both-arm predictions.
+
+```{r}
+example_data$S <- ifelse(example_data$D == 1, example_data$S1, example_data$S0)
+
+fit_greg <- msd_estimate(Y ~ D | S, data = example_data, estimator = "greg")
+fit_ppi <- msd_estimate(Y ~ D | S, data = example_data, estimator = "ppi_pp")
+
+fit_greg
+fit_ppi
+```
+
+When you have predictions for both arms (`S0` and `S1`), DiP estimators can use
+the within-unit contrast to reduce noise.
+
+```{r}
+fit_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip")
+fit_dt_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dt_dip")
+
+fit_dip
+fit_dt_dip
+```
+
 # Choosing an estimator
 
 Use `msd_select()` to compare estimators by their analytic standard errors.
