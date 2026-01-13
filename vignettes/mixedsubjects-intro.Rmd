@@ -1,0 +1,100 @@
+---
+title: "Introduction to mixedsubjects"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to mixedsubjects}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Why mixed-subjects designs?
+
+In many experiments, outcomes are expensive to collect from human participants. Mixed-subjects
+RCTs combine a small labeled (human) sample with inexpensive model-based predictions to recover
+credible causal effects while improving precision.
+
+The `mixedsubjects` package implements estimators that remain unbiased under standard MSD assumptions
+(randomized treatment assignment, random labeling) and that can reduce variance when predictions are
+informative.
+
+# Data requirements
+
+Each row is a unit. You need:
+
+- A binary treatment indicator `D` (0 = control, 1 = treated).
+- An outcome `Y` observed for labeled units and `NA` for unlabeled units.
+- Model predictions. You can provide:
+  - `S`: a single prediction for the assigned arm only, or
+  - `S0 + S1`: predictions for both potential outcomes.
+
+# Minimal example
+
+```{r}
+library(mixedsubjects)
+
+set.seed(123)
+
+n <- 200
+D <- rbinom(n, 1, 0.5)
+Y <- rnorm(n, mean = 0.2 * D, sd = 1)
+R <- rbinom(n, 1, 0.4)
+Y[R == 0] <- NA
+S0 <- rnorm(n, mean = 0, sd = 1)
+S1 <- S0 + 0.2 + rnorm(n, sd = 0.5)
+
+example_data <- data.frame(Y = Y, D = D, S0 = S0, S1 = S1)
+
+fit <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip_pp")
+fit
+```
+
+# Using one prediction vs. two predictions
+
+If you only have a single prediction for the assigned arm, supply it as `S` and
+use estimators that do not require both-arm predictions.
+
+```{r}
+example_data$S <- ifelse(example_data$D == 1, example_data$S1, example_data$S0)
+
+fit_greg <- msd_estimate(Y ~ D | S, data = example_data, estimator = "greg")
+fit_ppi <- msd_estimate(Y ~ D | S, data = example_data, estimator = "ppi_pp")
+
+fit_greg
+fit_ppi
+```
+
+When you have predictions for both arms (`S0` and `S1`), DiP estimators can use
+the within-unit contrast to reduce noise.
+
+```{r}
+fit_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dip")
+fit_dt_dip <- msd_estimate(Y ~ D | S0 + S1, data = example_data, estimator = "dt_dip")
+
+fit_dip
+fit_dt_dip
+```
+
+# Choosing an estimator
+
+Use `msd_select()` to compare estimators by their analytic standard errors.
+
+```{r}
+msd_select(Y ~ D | S0 + S1, data = example_data)
+```
+
+# Interpretation tips for applied researchers
+
+- **DIM** uses only labeled outcomes; it is always valid but can be noisy.
+- **GREG** adds a calibration term based on predictions for the unlabeled units.
+- **PPI++ / D–T** tune how much to trust predictions using cross-fitting.
+- **DiP estimators** leverage within-unit prediction differences (S1 - S0) to reduce noise.
+
+If you only have a prediction for the assigned arm, you can still use DIM, GREG, and PPI++/D–T.
+For DiP methods you need both `S0` and `S1`.
