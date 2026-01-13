@@ -80,6 +80,7 @@ fit_auto <- msd_estimate(data = auto_data, estimator = "dip_pp")
 fit_alt <- msd_estimate(Y ~ D | S1 - S0, data = auto_data, estimator = "dip_pp")
 fit_auto
 fit_alt
+summary(auto_data)
 ```
 
 When you have predictions for both arms (`S0` and `S1`), DiP estimators can use

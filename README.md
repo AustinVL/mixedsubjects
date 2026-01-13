@@ -33,6 +33,7 @@ override the formula when needed.
 ```r
 auto_data <- msd_data(my_data)
 msd_estimate(data = auto_data, estimator = "dip_pp")
+summary(auto_data)
 ```
 
 ## What estimator should I use?

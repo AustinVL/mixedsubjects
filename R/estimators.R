@@ -1331,3 +1331,56 @@ msd_data <- function(data,
     class = "msd_data"
   )
 }
+
+#' @export
+print.msd_data <- function(x, ...) {
+  cat("mixedsubjects data object\n")
+  cat(sprintf("Outcome: %s\n", x$outcome))
+  cat(sprintf("Treatment: %s\n", x$treatment))
+  cat(sprintf("Prediction (assigned): %s\n", ifelse(is.null(x$s_assigned), "none", x$s_assigned)))
+  cat(sprintf("Prediction (S0): %s\n", ifelse(is.null(x$s0), "none", x$s0)))
+  cat(sprintf("Prediction (S1): %s\n", ifelse(is.null(x$s1), "none", x$s1)))
+  cat(sprintf("Default formula: %s\n", deparse(x$formula)))
+  info <- summarize_data(parse_msd_formula(x$formula, x$data)$data)
+  cat(sprintf("N total: %d, labeled: %d, unlabeled: %d\n", info$n_total, info$n_labeled, info$n_unlabeled))
+  invisible(x)
+}
+
+#' @export
+summary.msd_data <- function(object, ...) {
+  print(object)
+  parsed <- parse_msd_formula(object$formula, object$data)
+  data_msd <- parsed$data
+  labeled <- data_msd[data_msd$r == 1, , drop = FALSE]
+  unlabeled <- data_msd[data_msd$r == 0, , drop = FALSE]
+  cat("\nSample sizes:\n")
+  cat(sprintf("  Labeled: %d (D=1: %d, D=0: %d)\n", nrow(labeled), sum(labeled$d == 1), sum(labeled$d == 0)))
+  cat(sprintf("  Unlabeled: %d (D=1: %d, D=0: %d)\n", nrow(unlabeled), sum(unlabeled$d == 1), sum(unlabeled$d == 0)))
+  cat("\nOutcome summary (labeled):\n")
+  print(summary(labeled$y))
+  if (parsed$has_predictions) {
+    cat("\nPrediction summaries (labeled):\n")
+    if (!all(is.na(labeled$s_assigned))) {
+      cat("Assigned prediction:\n")
+      print(summary(labeled$s_assigned))
+    }
+    if (parsed$has_two_arm) {
+      cat("S0 prediction:\n")
+      print(summary(labeled$s0))
+      cat("S1 prediction:\n")
+      print(summary(labeled$s1))
+    }
+    cat("\nCorrelations (labeled):\n")
+    corr_assigned <- stats::cor(labeled$y, labeled$s_assigned, use = "complete.obs")
+    cat(sprintf("Corr(Y, S_assigned): %.3f\n", corr_assigned))
+    if (parsed$has_two_arm) {
+      corr_t <- stats::cor(labeled$y[labeled$d == 1], labeled$s1[labeled$d == 1], use = "complete.obs")
+      corr_c <- stats::cor(labeled$y[labeled$d == 0], labeled$s0[labeled$d == 0], use = "complete.obs")
+      cat(sprintf("Corr(Y, S1 | D=1): %.3f\n", corr_t))
+      cat(sprintf("Corr(Y, S0 | D=0): %.3f\n", corr_c))
+    }
+  } else {
+    cat("\nNo predictions detected; only DIM is available.\n")
+  }
+  invisible(object)
+}
