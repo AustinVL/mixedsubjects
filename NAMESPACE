@@ -1,0 +1,8 @@
+export(msd_estimate)
+export(msd_data)
+export(msd_select)
+S3method(augment, msd_estimate)
+S3method(glance, msd_estimate)
+S3method(print, msd_estimate)
+S3method(summary, msd_estimate)
+S3method(tidy, msd_estimate)
