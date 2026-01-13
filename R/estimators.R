@@ -15,6 +15,7 @@
 #' @param tuning_epsilon Threshold for near-zero denominators.
 #' @param tuning_ridge Ridge factor used when `tuning_fallback = "ridge"`.
 #' @param se_correction Whether to apply a delta-method correction for tuning.
+#' @param fold_seed Optional seed for reproducible fold assignment.
 #' @param alpha Significance level for confidence interval.
 #' @param ... Reserved for future extensions.
 #' @return An object of class `msd_estimate`.
@@ -34,6 +35,7 @@ msd_estimate <- function(formula,
                          tuning_epsilon = 1e-8,
                          tuning_ridge = 1e-6,
                          se_correction = c("none", "delta"),
+                         fold_seed = NULL,
                          alpha = 0.05,
                          ...) {
   estimator <- match.arg(estimator)
@@ -61,6 +63,7 @@ msd_estimate <- function(formula,
       k = k,
       folds = folds,
       arm_specific = FALSE,
+      fold_seed = fold_seed,
       lambda_bounds = lambda_bounds,
       tuning_fallback = tuning_fallback,
       tuning_epsilon = tuning_epsilon,
@@ -73,6 +76,7 @@ msd_estimate <- function(formula,
       k = k,
       folds = folds,
       arm_specific = TRUE,
+      fold_seed = fold_seed,
       lambda_bounds = lambda_bounds,
       tuning_fallback = tuning_fallback,
       tuning_epsilon = tuning_epsilon,
@@ -87,6 +91,7 @@ msd_estimate <- function(formula,
       k = k,
       folds = folds,
       arm_specific = FALSE,
+      fold_seed = fold_seed,
       lambda_bounds = lambda_bounds,
       tuning_fallback = tuning_fallback,
       tuning_epsilon = tuning_epsilon,
@@ -99,6 +104,7 @@ msd_estimate <- function(formula,
       k = k,
       folds = folds,
       arm_specific = TRUE,
+      fold_seed = fold_seed,
       lambda_bounds = lambda_bounds,
       tuning_fallback = tuning_fallback,
       tuning_epsilon = tuning_epsilon,
@@ -265,17 +271,25 @@ parse_msd_formula <- function(formula, data) {
   mf <- stats::model.frame(main_form, data = data, na.action = stats::na.pass)
   y <- stats::model.response(mf)
   terms_obj <- stats::terms(main_form)
-  vars <- attr(terms_obj, "variables")
-  if (length(vars) < 3) {
+  term_labels <- attr(terms_obj, "term.labels")
+  if (length(term_labels) < 1) {
     stop("Formula must include an outcome and treatment: Y ~ D | ...")
   }
-  d_name <- as.character(vars[[3]])
+  d_name <- term_labels[1]
   if (!d_name %in% colnames(mf)) {
     stop("Treatment variable not found in data: ", d_name)
   }
   d <- mf[[d_name]]
+  if (is.logical(d)) {
+    d <- as.integer(d)
+  } else if (is.factor(d)) {
+    if (nlevels(d) != 2) {
+      stop("Treatment factor must have exactly two levels.")
+    }
+    d <- as.integer(d) - 1
+  }
   if (!all(d %in% c(0, 1))) {
-    stop("Treatment variable must be coded as 0/1.")
+    stop("Treatment variable must be coded as 0/1 (or logical/two-level factor).")
   }
   if (length(split) == 1) {
     preds <- NULL
@@ -373,27 +387,31 @@ tuned_estimator <- function(data,
                             k,
                             folds,
                             arm_specific,
+                            fold_seed,
                             lambda_bounds,
                             tuning_fallback,
                             tuning_epsilon,
                             tuning_ridge) {
   if (!crossfit) {
-    folds <- rep(1L, sum(data$r == 1))
+    fold_info <- normalize_folds(data, rep(1L, sum(data$r == 1)), k = 1)
     k <- 1
   } else if (is.null(folds)) {
-    folds <- make_folds(data, k = k)
+    fold_info <- normalize_folds(data, make_folds(data, k = k, seed = fold_seed), k = k)
+  } else {
+    fold_info <- normalize_folds(data, folds, k = k)
   }
 
-  fold_levels <- sort(unique(folds))
-  labeled_idx <- which(data$r == 1)
-  fold_data <- data.frame(index = labeled_idx, fold = folds, arm = data$d[labeled_idx])
+  fold_vec <- fold_info$fold_vector
+  fold_data <- fold_info$fold_data
+  fold_levels <- sort(unique(fold_vec))
+  labeled_idx <- fold_data$index
   mu1 <- mu0 <- numeric(length(fold_levels))
   lambda1 <- lambda0 <- numeric(length(fold_levels))
 
   for (i in seq_along(fold_levels)) {
     fold_id <- fold_levels[i]
-    train_idx <- labeled_idx[folds != fold_id]
-    test_idx <- labeled_idx[folds == fold_id]
+    train_idx <- labeled_idx[fold_vec != fold_id]
+    test_idx <- labeled_idx[fold_vec == fold_id]
     train_data <- data[train_idx, , drop = FALSE]
     test_data <- data[test_idx, , drop = FALSE]
 
@@ -430,8 +448,8 @@ tuned_estimator <- function(data,
     mu0[i] <- arm_correction(test_data, data, arm = 0, lambda = lambda0[i])
   }
 
-  weights1 <- fold_weights(folds[data$d[labeled_idx] == 1], fold_levels)
-  weights0 <- fold_weights(folds[data$d[labeled_idx] == 0], fold_levels)
+  weights1 <- fold_weights(fold_vec[fold_data$arm == 1], fold_levels)
+  weights0 <- fold_weights(fold_vec[fold_data$arm == 0], fold_levels)
   if (sum(weights1) == 0 || sum(weights0) == 0) {
     warning("Fold weights contain no labeled units in at least one arm; estimates may be unstable.", call. = FALSE)
   }
@@ -476,27 +494,31 @@ tuned_dip_estimator <- function(data,
                                 k,
                                 folds,
                                 arm_specific,
+                                fold_seed,
                                 lambda_bounds,
                                 tuning_fallback,
                                 tuning_epsilon,
                                 tuning_ridge) {
   if (!crossfit) {
-    folds <- rep(1L, sum(data$r == 1))
+    fold_info <- normalize_folds(data, rep(1L, sum(data$r == 1)), k = 1)
     k <- 1
   } else if (is.null(folds)) {
-    folds <- make_folds(data, k = k)
+    fold_info <- normalize_folds(data, make_folds(data, k = k, seed = fold_seed), k = k)
+  } else {
+    fold_info <- normalize_folds(data, folds, k = k)
   }
 
-  fold_levels <- sort(unique(folds))
-  labeled_idx <- which(data$r == 1)
-  fold_data <- data.frame(index = labeled_idx, fold = folds, arm = data$d[labeled_idx])
+  fold_vec <- fold_info$fold_vector
+  fold_data <- fold_info$fold_data
+  fold_levels <- sort(unique(fold_vec))
+  labeled_idx <- fold_data$index
   tau <- numeric(length(fold_levels))
   lambda1 <- lambda0 <- numeric(length(fold_levels))
 
   for (i in seq_along(fold_levels)) {
     fold_id <- fold_levels[i]
-    train_idx <- labeled_idx[folds != fold_id]
-    test_idx <- labeled_idx[folds == fold_id]
+    train_idx <- labeled_idx[fold_vec != fold_id]
+    test_idx <- labeled_idx[fold_vec == fold_id]
     train_data <- data[train_idx, , drop = FALSE]
     test_data <- data[test_idx, , drop = FALSE]
 
@@ -533,7 +555,7 @@ tuned_dip_estimator <- function(data,
     tau[i] <- dip_fold_estimate(test_data, data, lambda1[i], lambda0[i])
   }
 
-  weights <- fold_weights(folds, fold_levels)
+  weights <- fold_weights(fold_vec, fold_levels)
   if (sum(weights) == 0) {
     warning("Fold weights contain no labeled units; estimates may be unstable.", call. = FALSE)
   }
@@ -574,9 +596,12 @@ arm_correction <- function(test_data, data, arm, lambda) {
   y_mean + lambda * (s_u - s_l)
 }
 
-make_folds <- function(data, k = 2) {
+make_folds <- function(data, k = 2, seed = NULL) {
   if (k != 2) {
     stop("Only two-fold cross-fitting is supported.")
+  }
+  if (!is.null(seed)) {
+    set.seed(seed)
   }
   labeled_idx <- which(data$r == 1)
   fold <- rep(NA_integer_, length(labeled_idx))
@@ -1162,6 +1187,33 @@ fold_weights <- function(fold_assignments, fold_levels) {
     return(setNames(rep(0, length(fold_levels)), fold_levels))
   }
   stats::setNames(counts / total, fold_levels)
+}
+
+normalize_folds <- function(data, folds, k) {
+  labeled_idx <- which(data$r == 1)
+  if (is.data.frame(folds)) {
+    required <- c("index", "fold", "arm")
+    missing <- setdiff(required, names(folds))
+    if (length(missing) > 0) {
+      stop("folds data.frame must contain columns: index, fold, arm.")
+    }
+    fold_data <- folds
+    fold_data <- fold_data[order(fold_data$index), , drop = FALSE]
+    fold_vec <- fold_data$fold
+  } else {
+    if (length(folds) != length(labeled_idx)) {
+      stop("folds vector must have length equal to number of labeled units.")
+    }
+    fold_vec <- as.integer(folds)
+    fold_data <- data.frame(index = labeled_idx, fold = fold_vec, arm = data$d[labeled_idx])
+  }
+  if (any(is.na(fold_vec))) {
+    stop("folds must not contain NA.")
+  }
+  if (any(!fold_vec %in% seq_len(k))) {
+    stop("folds must be coded within 1:k.")
+  }
+  list(fold_vector = fold_vec, fold_data = fold_data)
 }
 
 tune_ratio <- function(numer,
